@@ -90,7 +90,7 @@ void init_ctx(Arena *a) {
     o_comp_stack = arena_alloc(a, sizeof(*o_comp_stack));
 
     log_conf = arena_alloc(a, sizeof(*log_conf));
-    log_conf->log_file_path = "ctui_log.txt";
+    log_conf->log_file_path = "./logs/ctui_log.txt";
     log_f = fopen(log_conf->log_file_path, "a");
     if (!log_f) {
         perror(log_conf->log_file_path);
@@ -735,10 +735,8 @@ void draw_comp(CTUI_Component *comp) {
     );
     mvwhline(ctx->screen_config->win, comp_bbox->y, comp_bbox->x + 1,  0, comp_bbox->width - 2);
     mvwhline(ctx->screen_config->win, comp_bbox->y + comp_bbox->height - 1, comp_bbox->x + 1, 0, comp_bbox->width - 2);
-
     mvwvline(ctx->screen_config->win, comp_bbox->y + 1, comp_bbox->x,  0, comp_bbox->height - 2);
     mvwvline(ctx->screen_config->win, comp_bbox->y + 1, comp_bbox->x + comp_bbox->width - 1, 0, comp_bbox->height - 2);
-
 }
 
 void draw_layout(CTUI_Component *comp)
@@ -800,6 +798,5 @@ int main(int argc, char **argv) {
     }
 
     endwin();
-
     return 0;
 } 
