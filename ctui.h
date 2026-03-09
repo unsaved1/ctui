@@ -80,26 +80,50 @@ typedef struct CTUI_Component_Border {
 
 typedef struct CTUI_Component CTUI_Component;
 
-typedef struct CTUI_Component_Container_Data_Child CTUI_Component_Container_Data_Child;
-struct CTUI_Component_Container_Data_Child {
-    CTUI_Component_Container_Data_Child *next;
+typedef struct CTUI_Component_Child CTUI_Component_Child;
+struct CTUI_Component_Child {
+    CTUI_Component_Child *prev, *next;
     CTUI_Component *comp;
 };
 
-typedef struct CTUI_Component_Container_Data_Children {
-    CTUI_Component_Container_Data_Child *begin, *end;
-} CTUI_Component_Container_Data_Children;
+typedef struct CTUI_Component_Children {
+    CTUI_Component_Child *head, *tail;
+    size_t length;
+    size_t grow_children_length;
+} CTUI_Component_Children;
+
+typedef struct CTUI_Component_SL_Child CTUI_Component_SL_Child;
+struct CTUI_Component_SL_Child {
+    CTUI_Component_SL_Child *next;
+    CTUI_Component *comp;
+};
 
 typedef enum CTUI_Component_Flow_Dir {
     FLOW_DIR_ROW,
     FLOW_DIR_COLUMN
 } CTUI_Component_Flow_Dir;
 
+typedef struct CTUI_Modifier_Flow_Ref {
+    uint16_t padding_a;
+    uint16_t padding_b;
+    uint16_t border_a;
+    uint16_t border_b;
+} CTUI_Modifier_Flow_Ref;
+
+typedef struct CTUI_Flow_Ref {
+    uint16_t *bbox_value;
+    CTUI_Component_Sizing *sizing; 
+    CTUI_Modifier_Flow_Ref mod_ref;
+} CTUI_Flow_Ref;
+
+typedef struct CTUI_Flow_Refs {
+    CTUI_Flow_Ref main; 
+    CTUI_Flow_Ref sec; 
+} CTUI_Flow_Refs;
+
 typedef struct CTUI_Component_Container_Data {
-    CTUI_Component_X_Alignment x_alignment;
-    CTUI_Component_Y_Alignment y_alignment;
     CTUI_Component_Flow_Dir flow_dir;
-    CTUI_Component_Container_Data_Children *children;
+    CTUI_Component_Children *children;
 } CTUI_Component_Container_Data;
 
 typedef struct CTUI_Component_Text_Data {
@@ -110,12 +134,19 @@ typedef struct CTUI_Component_Data {
     CTUI_Component_Sizing_Axis sizes;
     CTUI_Component_Padding padding;
     CTUI_Component_Border border;
+    CTUI_Component_X_Alignment x_alignment;
+    CTUI_Component_Y_Alignment y_alignment;
     union {
         CTUI_Component_Container_Data container;
         CTUI_Component_Text_Data text;
     };
 } CTUI_Component_Data;
 CTUI__WRAPPER_STRUCT(CTUI_Component_Data);
+
+typedef struct CTUI_MaxSize {
+    uint16_t w;
+    uint16_t h;
+} CTUI_MaxSize;
 
 typedef struct CTUI_BoundingBox {
     uint16_t x, y, width, height;
@@ -152,21 +183,9 @@ typedef struct CTUI_Children_Main_Dir_Size_Config {
     int growing;
     int fixed;
 
-    CTUI_Component_Container_Data_Children grow_children;
+    CTUI_Component_Children grow_children;
     int grow_children_len;
 } CTUI_Children_Main_Dir_Size_Config;
-
-typedef struct CTUI_Flow_Refs {
-    uint16_t *bbox_value;
-    CTUI_Component_Sizing *sizing; 
-} CTUI_Flow_Refs;
-
-typedef struct CTUI_Modifier_Flow_Refs {
-    uint16_t *padding_a;
-    uint16_t *padding_b;
-    uint16_t *border_a;
-    uint16_t *border_b;
-} CTUI_Modifier_Flow_Refs;
 
 typedef struct CTUI_LogConfig {
     const char *log_file_path;

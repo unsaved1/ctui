@@ -1,5 +1,11 @@
+#define _POSIX_C_SOURCE 199309L
+
+#include <math.h>
+#include <time.h>
+#include <unistd.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdbool.h>
 #include <ncurses.h>
 
@@ -9,9 +15,7 @@
 
 DEFINE_HASHMAP(CTUI_Components_HashMap, CTUI_Component *);
 
-enum {
-    key_escape = 27
-};
+enum {key_escape = 27};
 
 CTUI_Context ctui_ctx;
 
@@ -32,7 +36,7 @@ void ctui_log(LOG_LEVEL level, const char *fmt, ...) {
     fprintf(ctx->log_config->f_stream, "\n");
 }
 
-void log_component(CTUI_Component *comp){
+void print_component(CTUI_Component *comp){
     ctui_log(LOG_INFO, "----------------------- CTUI COMPONENT START -----------------------");
     ctui_log(LOG_INFO, "------------- component ID config -------------");
     ctui_log(LOG_INFO, "id = %d", comp->id.value);
@@ -52,6 +56,9 @@ void log_component(CTUI_Component *comp){
     ctui_log(LOG_INFO, "border left = %d", comp->data->border.width.left);
     ctui_log(LOG_INFO, "border right = %d", comp->data->border.width.right);
     ctui_log(LOG_INFO, "------------- component BORDER config -------------");
+
+    ctui_log(LOG_INFO, "max width = %.10f", comp->data->sizes.width.minmax.max);
+    ctui_log(LOG_INFO, "max height = %.5f", comp->data->sizes.height.minmax.max);
 
     switch (comp->type) {
         case COMPONENT_TYPE_CONTAINER: {
@@ -77,6 +84,18 @@ void log_component(CTUI_Component *comp){
     ctui_log(LOG_INFO, "----------------------- CTUI COMPONENT END -----------------------\n\n");
 }
 
+void print_log_ctui_ctx()
+{
+    CTUI_Context *ctx = get_current_ctx();
+    ctui_log(LOG_INFO, "------------- CTUI CONTEXT INFO START -------------");
+    ctui_log(LOG_INFO, "ctx screen width = %d", ctx->screen_config->width);
+    ctui_log(LOG_INFO, "ctx screen height = %d", ctx->screen_config->height);
+    ctui_log(LOG_INFO, "ctx arena end capacity = %d",  (int)ctx->arena->end->capacity);
+    ctui_log(LOG_INFO, "ctx components hash map length (total components count) = %d", (int)ctx->components_hm->length);
+    ctui_log(LOG_INFO, "ctx components hash map capacity = %d", (int)ctx->components_hm->capacity);
+    ctui_log(LOG_INFO, "ctx open components stack length = %d", (int)ctx->open_components_stack->length);
+    ctui_log(LOG_INFO, "------------- CTUI CONTEXT INFO END -------------\n\n");
+}
 
 void init_ctx(Arena *a) {
     CTUI_Components_HashMap *comp_hm;
@@ -99,9 +118,8 @@ void init_ctx(Arena *a) {
     log_conf->f_stream = log_f;
 
     screen_conf = arena_alloc(a, sizeof(*screen_conf));
-    screen_conf->height = LINES;
-    screen_conf->width  = COLS;
     screen_conf->win = stdscr;
+    getmaxyx(stdscr, screen_conf->height, screen_conf->width);
 
     CTUI_Context *ctx = get_current_ctx();
     ctx->arena                  = a;
@@ -111,6 +129,12 @@ void init_ctx(Arena *a) {
     ctx->open_components_stack  = o_comp_stack;
     ctx->log_config             = log_conf;
 };
+
+void close_ctx()
+{
+    CTUI_Context *ctx = get_current_ctx();
+    fclose(ctx->log_config->f_stream);
+}
 
 void CTUI_Open_Components_Stack_Push(CTUI_Component_Id id) 
 {
@@ -163,43 +187,41 @@ CTUI_Component_Id make_component_id(const char *key)
     return component_id;
 }
 
-CTUI_Component_Container_Data_Children *init_children()
+CTUI_Component_Children *init_children()
 {
     CTUI_Context *ctx = get_current_ctx();
-    CTUI_Component_Container_Data_Children *children;
+    CTUI_Component_Children *children;
     children = arena_alloc(ctx->arena, sizeof(*children));
-    children->begin = children->end = NULL;
+    children->head = children->tail = NULL;
+    children->length = 0;
     return children;
 }
 
-CTUI_Component_Container_Data_Child *init_child(CTUI_Component *comp)
-{
+void append_child(
+    CTUI_Component_Children *children,
+    CTUI_Component *comp
+) {
     CTUI_Context *ctx = get_current_ctx();
-    CTUI_Component_Container_Data_Child *child;
+    CTUI_Component_Child *child;
     child = arena_alloc(ctx->arena, sizeof(*child));
     child->comp = comp;
     child->next = NULL;
-    return child;
-}
-
-void append_child(
-    CTUI_Component_Container_Data_Children *children,
-    CTUI_Component_Container_Data_Child *new_child
-) {
-    if (!children->begin) {
-        children->begin = children->end = new_child;
+    if (!children->head) {
+        child->prev = NULL;
+        children->head = children->tail = child;
     } else {
-        children->end->next = new_child;
-        children->end = children->end->next;
+        child->prev = children->tail;
+        children->tail->next = child;
+        children->tail = children->tail->next;
     }
+    ++children->length;
 }
 
 void pin_component_to_parent(CTUI_Component *parent, CTUI_Component *comp)
 {
     if (parent->type == COMPONENT_TYPE_CONTAINER) {
         comp->parent = parent; 
-        CTUI_Component_Container_Data_Child *new_child = init_child(comp);
-        append_child(parent->data->container.children, new_child);
+        append_child(parent->data->container.children, comp);
     }
 }
 
@@ -234,16 +256,12 @@ void open_component_with_id(CTUI_Component_Id id)
 void configure_open_component(CTUI_ComponentType type, CTUI_Component_Data data)
 {
     CTUI_Context *ctx = get_current_ctx(); 
-    CTUI_Open_Components_Stack *o_stack = ctx->open_components_stack; 
-    ctui_log(LOG_DEBUG, "stack length = %d", o_stack->length);
-    ctui_log(LOG_DEBUG, "in configure input type = %d", type);
     if (ctx->current_element) {
-        ctui_log(
-            LOG_DEBUG, "in configure component name = %s", 
-            ctx->current_element->id.string_value
-        );
         ctx->current_element->type = type; 
         *ctx->current_element->data = data;
+        ctui_log(LOG_DEBUG, "cur component -> %s", ctx->current_element->id.string_value);
+        if (ctx->current_element->parent)
+            ctui_log(LOG_DEBUG, "parent component -> %s", ctx->current_element->parent->id.string_value);
     }
 }
 
@@ -272,9 +290,9 @@ void begin_layout()
         COMPONENT_TYPE_CONTAINER, 
         CTUI__CONFIG_WRAPPER(
             CTUI_Component_Data, {
+            .x_alignment = X_LEFT,
+            .y_alignment = Y_TOP,
             .container = {
-                .x_alignment = X_LEFT,
-                .y_alignment = Y_TOP,
                 .flow_dir = FLOW_DIR_ROW,
                 .children = init_children() 
             },
@@ -308,435 +326,450 @@ void header()
 {
     CTUI_Context *ctx = get_current_ctx();
     CTUI("header", COMPONENT_TYPE_CONTAINER, {
+        .sizes = {
+            .width = {.type = SIZE_GROW},
+            .height= {.type = SIZE_GROW}
+        },
         .border = {.width = {.left = 1, .right = 1, .top = 1, .bottom = 1}},
         .padding = {.top = 1, .bottom = 1, .left = 2, .right = 2},
-        .sizes = {
-            .width = {.type = SIZE_PERCENT, .percent = 40},
-            .height= {.type = SIZE_FIXED, .percent = 10}
-        },
+        .x_alignment = X_CENTER,
+        .y_alignment = Y_CENTER,
         .container = {
-            .x_alignment = X_LEFT,
-            .y_alignment = Y_TOP,
-            .flow_dir = FLOW_DIR_ROW,
+            .flow_dir = FLOW_DIR_COLUMN,
             .children = init_children() 
         }
     }) {
-        CTUI("title", COMPONENT_TYPE_LABEL, {
-            .text = { .value = arena_strdup(ctx->arena, "h title") },
-            .padding = {0},
-            .border = {{0}},
+        CTUI("content", COMPONENT_TYPE_CONTAINER, {
             .sizes = {
                 .width = {.type = SIZE_GROW},
-                .height = {.type = SIZE_FIXED, .fixvalue = 2}
+                .height= {.type = SIZE_GROW}
+            },
+            .border = {.width = {.left = 1, .right = 1, .top = 1, .bottom = 1}},
+            .padding = {.top = 1, .bottom = 1, .left = 2, .right = 2},
+            .x_alignment = X_LEFT,
+            .y_alignment = Y_TOP,
+            .container = {
+                .flow_dir = FLOW_DIR_ROW,
+                .children = init_children() 
             }
-        });
-        CTUI("title2", COMPONENT_TYPE_LABEL, {
-            .text = { .value = arena_strdup(ctx->arena, "h title 2") },
-            .padding = {0},
-            .border = {{0}},
-            .sizes = {
-                .width = {.type = SIZE_GROW, .minmax = {.min = 20, .max = 40}},
-                .height = {.type = SIZE_FIXED, .fixvalue = 4}
-            }
-        });
-        CTUI("subtitle", COMPONENT_TYPE_LABEL, {
-            .text = { .value = arena_strdup(ctx->arena, "h subtitle") },
-            .padding = {0},
-            .border = {{0}},
-            .sizes = {
-                .width = {.type = SIZE_FIXED, .fixvalue = 20},
-                .height = {.type = SIZE_FIXED, .fixvalue = 4}
-            }
-        });
+        }) {
+            CTUI("title", COMPONENT_TYPE_LABEL, {
+                .text = { .value = arena_strdup(ctx->arena, "h title") },
+                .sizes = {
+                    .width = {.type = SIZE_GROW},
+                    .height = {.type = SIZE_FIXED, .fixvalue = 2}
+                },
+                .padding = {0},
+                .border = {{0}}
+            });
+            CTUI("title2", COMPONENT_TYPE_LABEL, {
+                .sizes = {
+                    .width = {.type = SIZE_GROW, .minmax = {.min = 20, .max = 40}},
+                    .height = {.type = SIZE_FIXED, .fixvalue = 5}
+                },
+                .text = { .value = arena_strdup(ctx->arena, "h title 2") },
+                .x_alignment = X_CENTER,
+                .y_alignment = Y_CENTER,
+                .padding = {0},
+                .border = {
+                    .width = {.top = 1, .bottom = 1, .left = 1, .right = 1}
+                }
+            });
+            CTUI("subtitle", COMPONENT_TYPE_LABEL, {
+                .sizes = {
+                    .width = {.type = SIZE_FIXED, .fixvalue = 20},
+                    .height = {.type = SIZE_FIXED, .fixvalue = 4}
+                },
+                .text = { .value = arena_strdup(ctx->arena, "h subtitle") },
+                .x_alignment = X_RIGHT,
+                .y_alignment = Y_BOTTOM,
+                .padding = {0},
+                .border = {
+                    .width = {.top = 1, .bottom = 1, .left = 1, .right = 1}
+                }
+            });
+        }
     }
+    CTUI("content-bottom", COMPONENT_TYPE_CONTAINER, {
+        .sizes = {
+            .width = {.type = SIZE_GROW},
+            .height= {.type = SIZE_GROW}
+        },
+        .border = {.width = {.left = 1, .right = 1, .top = 1, .bottom = 1}},
+        .padding = {.top = 1, .bottom = 1, .left = 2, .right = 2},
+        .x_alignment = X_LEFT,
+        .y_alignment = Y_TOP,
+        .container = {
+            .flow_dir = FLOW_DIR_ROW,
+            .children = init_children() 
+        }
+    });
 }
 
-int calc_component_x_spacing(CTUI_Component *comp)
+void init_x_flow_refs(CTUI_Flow_Ref *ref, CTUI_Component *comp)
 {
-    int w = 0;
-    w += comp->data->padding.left; 
-    w += comp->data->padding.right; 
-    w += comp->data->border.width.left; 
-    w += comp->data->border.width.right;  
-    return w;
+    ref->bbox_value = &comp->computed->bounding_box.width; 
+    ref->sizing = &comp->data->sizes.width;
 }
 
-int calc_component_y_spacing(CTUI_Component *comp)
+void init_y_flow_refs(CTUI_Flow_Ref *ref, CTUI_Component *comp)
 {
-    int h = 0;
-    h += comp->data->padding.top; 
-    h += comp->data->padding.bottom; 
-    h += comp->data->border.width.top; 
-    h += comp->data->border.width.bottom; 
-    return h;
+    ref->bbox_value = &comp->computed->bounding_box.height; 
+    ref->sizing = &comp->data->sizes.height;
 }
 
-int calc_children_len(CTUI_Component_Container_Data_Children *children) {
-    CTUI_Component_Container_Data_Child *tmp = children->begin;
-    int n = 0;
-    while (tmp) {
-        ++n;
-        tmp = tmp->next;
-    } 
-    return n;
-} 
-
-int calc_percent_component(CTUI_Component *comp) 
+void init_x_mod_flow_refs(CTUI_Modifier_Flow_Ref *ref, CTUI_Component *comp)
 {
-    CTUI_Component *parent = comp->parent;
-    int w;
-    w = calc_component_x_spacing(comp);
-    w += comp->data->sizes.width.percent * parent->data->sizes.width.minmax.max;
-    return w;
+    ref->border_a  = comp->data->border.width.left;
+    ref->border_b  = comp->data->border.width.right;
+    ref->padding_a = comp->data->padding.left;
+    ref->padding_b = comp->data->padding.right;
 }
 
-void init_w_flow_refs(CTUI_Flow_Refs *refs, CTUI_Component *comp)
+void init_y_mod_flow_refs(CTUI_Modifier_Flow_Ref *ref, CTUI_Component *comp)
 {
-    refs->bbox_value = &comp->computed->bounding_box.width; 
-    refs->sizing = &comp->data->sizes.width;
-}
-
-void init_h_flow_refs(CTUI_Flow_Refs *refs, CTUI_Component *comp)
-{
-    refs->bbox_value = &comp->computed->bounding_box.height; 
-    refs->sizing = &comp->data->sizes.height;
+    ref->border_a  = comp->data->border.width.top;
+    ref->border_b  = comp->data->border.width.bottom;
+    ref->padding_a = comp->data->padding.top;
+    ref->padding_b = comp->data->padding.bottom;
 }
 
 void init_flow_refs(
     CTUI_Component_Flow_Dir dir,
-    CTUI_Component *comp, 
-    CTUI_Flow_Refs *refs, 
-    CTUI_Flow_Refs *opt_refs
+    CTUI_Component *comp,
+    CTUI_Flow_Refs *refs
 ) {
     if (dir == FLOW_DIR_ROW) {
-        init_w_flow_refs(refs, comp);
-        if (opt_refs) 
-            init_h_flow_refs(opt_refs, comp);
+        init_x_flow_refs(&refs->main, comp);
+        init_x_mod_flow_refs(&refs->main.mod_ref, comp);
+        init_y_flow_refs(&refs->sec, comp);
+        init_y_mod_flow_refs(&refs->sec.mod_ref, comp);
     } else {
-        init_h_flow_refs(refs, comp);
-        if (opt_refs) 
-            init_w_flow_refs(opt_refs, comp);
+        init_x_flow_refs(&refs->sec, comp);
+        init_x_mod_flow_refs(&refs->sec.mod_ref, comp);
+        init_y_flow_refs(&refs->main, comp);
+        init_y_mod_flow_refs(&refs->main.mod_ref, comp);
     } 
 }
 
-void init_x_mod_flow_refs(CTUI_Modifier_Flow_Refs *refs, CTUI_Component *comp)
+
+int calc_comp_spacing(CTUI_Modifier_Flow_Ref ref)
 {
-    refs->border_a  = &comp->data->border.width.left;
-    refs->border_b  = &comp->data->border.width.right;
-    refs->padding_a = &comp->data->padding.left;
-    refs->padding_b = &comp->data->padding.right;
+    int res;
+    res = ref.padding_a; 
+    res += ref.padding_b; 
+    res += ref.border_a; 
+    res += ref.border_b;  
+    return res;
 }
 
-void init_y_mod_flow_refs(CTUI_Modifier_Flow_Refs *refs, CTUI_Component *comp)
+void sl_append_child(CTUI_Component_SL_Child **head, CTUI_Component *comp)
 {
-    refs->border_a  = &comp->data->border.width.top;
-    refs->border_b  = &comp->data->border.width.bottom;
-    refs->padding_a = &comp->data->padding.top;
-    refs->padding_b = &comp->data->padding.bottom;
+    CTUI_Context *ctx = get_current_ctx();
+    CTUI_Component_SL_Child *new_child;
+    new_child = arena_alloc(ctx->arena, sizeof(*new_child)); 
+    new_child->comp = comp;
+    new_child->next = *head;
+    *head = new_child;
 }
 
-void init_mod_flow_refs(
-    CTUI_Component_Flow_Dir dir,
-    CTUI_Component *comp, 
-    CTUI_Modifier_Flow_Refs *refs, 
-    CTUI_Modifier_Flow_Refs *opt_refs
-) {
-    if (dir == FLOW_DIR_ROW) {
-        init_x_mod_flow_refs(refs, comp);
-        if (opt_refs) 
-            init_y_mod_flow_refs(opt_refs, comp);
-    } else {
-        init_y_mod_flow_refs(refs, comp);
-        if (opt_refs) 
-            init_x_mod_flow_refs(opt_refs, comp);
-    } 
-}
-
-void resize_growing_children(
-    CTUI_Component_Flow_Dir dir,
-    CTUI_Component *ch_comp,
-    CTUI_Children_Main_Dir_Size_Config *children_sizes
-) {
-    CTUI_Component_Sizing *p_sizing_ref;
-    CTUI_Modifier_Flow_Refs p_modifier_refs = {0};
-    CTUI_Flow_Refs grow_child_flow_refs = {0};
-    CTUI_Component_Container_Data_Child *tmp;
-
-    init_mod_flow_refs(dir, ch_comp->parent, &p_modifier_refs, NULL);
-
-    if (dir == FLOW_DIR_ROW)
-        p_sizing_ref = &ch_comp->parent->data->sizes.width;
-    else 
-        p_sizing_ref = &ch_comp->parent->data->sizes.height;
-
-    children_sizes->growing = (
-        p_sizing_ref->minmax.max
-        - *p_modifier_refs.padding_a 
-        - *p_modifier_refs.padding_b 
-        - *p_modifier_refs.border_a 
-        - *p_modifier_refs.border_b
-    ) - children_sizes->fixed - children_sizes->percentages;  
-
-    tmp = children_sizes->grow_children.begin;
-    while (tmp) {
-        if (dir == FLOW_DIR_ROW) 
-            init_w_flow_refs(&grow_child_flow_refs, tmp->comp);
-        else
-            init_h_flow_refs(&grow_child_flow_refs, tmp->comp);
-        *grow_child_flow_refs.bbox_value = children_sizes->growing / children_sizes->grow_children_len;
-        tmp = tmp->next;
-    } 
-}
-
-void calc_children_main_dir_sizes(
-    CTUI_Component_Flow_Dir flow_dir,
-    CTUI_Component *ch_comp,
-    CTUI_Flow_Refs *ch_refs,
-    CTUI_Children_Main_Dir_Size_Config *children_sizes
-) {
-    ch_comp->computed->bounding_box.width = calc_component_x_spacing(ch_comp); 
-    ch_comp->computed->bounding_box.height = calc_component_y_spacing(ch_comp); 
-    switch (ch_refs->sizing->type) {
-    case SIZE_FIXED: 
-        *ch_refs->bbox_value = ch_refs->sizing->fixvalue;
-        children_sizes->fixed += *ch_refs->bbox_value;
-        resize_growing_children(flow_dir, ch_comp, children_sizes);
-        break;
-    case SIZE_GROW: 
-        append_child(&children_sizes->grow_children, init_child(ch_comp));
-        ++children_sizes->grow_children_len;
-        resize_growing_children(flow_dir, ch_comp, children_sizes);
-        break;
-    case SIZE_PERCENT: 
-        *ch_refs->bbox_value += calc_percent_component(ch_comp);
-        children_sizes->percentages += *ch_refs->bbox_value;
-        break;
+void measure_comp_maxsize(CTUI_Component *comp)
+{
+    if (!comp) {
+        return; 
     }
-}
+    CTUI_Context *ctx = get_current_ctx();
+    CTUI_Flow_Refs f_refs = {0}, ch_f_refs = {0}, p_f_refs = {0};
+    CTUI_Component_Child *tmp;
+    int grow_children_len = 0;
 
-void calc_children_secondary_dir_sizes(
-    CTUI_Component_Flow_Dir dir,
-    CTUI_Component *ch_comp, 
-    CTUI_Flow_Refs *ch_refs, 
-    int child_grow_qt
-) {
-    int h, available_height;
-    CTUI_Component_Sizing *parent_sizing;
+    init_flow_refs(comp->data->container.flow_dir, comp, &f_refs);
 
-    if (dir == FLOW_DIR_ROW) 
-        parent_sizing = &ch_comp->parent->data->sizes.height;
-    else
-        parent_sizing = &ch_comp->parent->data->sizes.width;
+    if (comp->parent) {
+        init_flow_refs(comp->data->container.flow_dir, comp->parent, &p_f_refs);
+        if (f_refs.main.sizing->minmax.max == 0)
+            f_refs.main.sizing->minmax.max =
+                p_f_refs.main.sizing->minmax.max;
+        if (f_refs.sec.sizing->minmax.max == 0)
+            f_refs.sec.sizing->minmax.max = 
+                p_f_refs.sec.sizing->minmax.max;
+    } else {
+        if (comp->data->container.flow_dir == FLOW_DIR_ROW) {
+            f_refs.main.sizing->minmax.max = ctx->screen_config->width;
+            f_refs.sec.sizing->minmax.max = ctx->screen_config->height;
+        } else {
+            f_refs.main.sizing->minmax.max = ctx->screen_config->height;
+            f_refs.sec.sizing->minmax.max = ctx->screen_config->width;
+        }
+    } 
 
-    switch (ch_refs->sizing->type) {
+    tmp = comp->data->container.children->head;
+    int occupied_space = 0; 
+    while(tmp) {
+        init_flow_refs(comp->data->container.flow_dir, tmp->comp, &ch_f_refs);
+        switch(ch_f_refs.main.sizing->type){
         case SIZE_FIXED:
-            *ch_refs->bbox_value += ch_refs->sizing->fixvalue;
+            ch_f_refs.main.sizing->minmax.max = ch_f_refs.main.sizing->fixvalue; 
+            occupied_space += ch_f_refs.main.sizing->minmax.max;
             break;
         case SIZE_PERCENT:
-            *ch_refs->bbox_value += ch_refs->sizing->fixvalue;
-            h = parent_sizing->minmax.max / ch_refs->sizing->percent; 
-            ch_comp->computed->bounding_box.height += h;
+            ch_f_refs.main.sizing->minmax.max = ceilf(
+                (
+                 f_refs.main.sizing->minmax.max
+                 - calc_comp_spacing(f_refs.main.mod_ref)
+                ) * ch_f_refs.main.sizing->percent
+            ); 
+            occupied_space += ch_f_refs.main.sizing->minmax.max;
             break;
         case SIZE_GROW:
-            available_height = parent_sizing->minmax.max;  
-            *ch_refs->bbox_value += available_height / child_grow_qt;
+            ++grow_children_len;
             break;
+        }
+        switch(ch_f_refs.sec.sizing->type){
+        case SIZE_FIXED:
+            ch_f_refs.sec.sizing->minmax.max = ch_f_refs.sec.sizing->fixvalue; 
+            break;
+        case SIZE_PERCENT:
+            ch_f_refs.sec.sizing->minmax.max = ceilf(
+                (
+                 f_refs.sec.sizing->minmax.max
+                 - calc_comp_spacing(f_refs.sec.mod_ref)
+                ) * ch_f_refs.sec.sizing->percent
+            ); 
+            break;
+        case SIZE_GROW:
+            ch_f_refs.sec.sizing->minmax.max = 
+                f_refs.sec.sizing->minmax.max
+                - calc_comp_spacing(f_refs.sec.mod_ref); 
+            break;
+        }
+        tmp = tmp->next;
+    }
+
+    comp->data->container.children->grow_children_length = grow_children_len;
+
+    tmp = comp->data->container.children->head;
+    while(tmp) {
+        init_flow_refs(comp->data->container.flow_dir, tmp->comp, &ch_f_refs);
+        if (ch_f_refs.main.sizing->type == SIZE_GROW) {
+            if (tmp->comp->type == COMPONENT_TYPE_CONTAINER) {
+                ch_f_refs.main.sizing->minmax.max = ceilf(
+                    (
+                        f_refs.main.sizing->minmax.max 
+                        - calc_comp_spacing(f_refs.main.mod_ref) 
+                        - occupied_space
+                    ) / grow_children_len
+                );
+            } else {
+                ch_f_refs.main.sizing->minmax.max = ceilf(
+                    (
+                        f_refs.main.sizing->minmax.max
+                        - calc_comp_spacing(f_refs.main.mod_ref) 
+                        - occupied_space
+                    ) / grow_children_len
+                );
+                ctui_log(LOG_DEBUG, "ch_f_refs.main.sizing->minmax.max -> %.2f", ch_f_refs.main.sizing->minmax.max);
+            }
+        }
+        if (tmp->comp->type == COMPONENT_TYPE_CONTAINER)
+            measure_comp_maxsize(tmp->comp);
+        tmp = tmp->next;
     }
 }
 
-void measure_component(CTUI_Component *comp) 
+void calc_children_main_sizes(
+    CTUI_Component_Flow_Dir flow_dir,
+    CTUI_Component *comp,
+    CTUI_Flow_Ref f_ref,
+    CTUI_Flow_Ref p_f_ref
+) {
+    switch (f_ref.sizing->type) {
+    case SIZE_FIXED: 
+        *f_ref.bbox_value = f_ref.sizing->fixvalue;
+        break;
+    case SIZE_PERCENT: 
+        *f_ref.bbox_value = f_ref.sizing->minmax.max;
+        break;
+    case SIZE_GROW: 
+        *f_ref.bbox_value = f_ref.sizing->minmax.max;
+        break;
+    }
+}
+
+void calc_children_sec_sizes(
+    CTUI_Component_Flow_Dir dir,
+    CTUI_Flow_Ref flow_ref,
+    CTUI_Flow_Ref p_flow_ref
+) {
+    switch (flow_ref.sizing->type) {
+    case SIZE_FIXED:
+        *flow_ref.bbox_value = flow_ref.sizing->fixvalue;
+        break;
+    case SIZE_PERCENT:
+        *flow_ref.bbox_value = flow_ref.sizing->minmax.max; 
+        break;
+    case SIZE_GROW:
+        *flow_ref.bbox_value = flow_ref.sizing->minmax.max;
+        break;
+    }
+}
+
+void measure_comp(CTUI_Component *comp) 
 {
     if (!comp) 
         return;
-    int x_spacing, y_spacing; 
-    CTUI_Component_Container_Data_Child *child;
-    CTUI_Children_Main_Dir_Size_Config children_sizes = {0}; 
-    CTUI_Component_Flow_Dir flow_dir;
-    CTUI_Flow_Refs 
-        main_refs       = {0}, 
-        sec_refs        = {0}, 
-        child_main_refs = {0}, 
-        child_sec_refs  = {0};
-    CTUI_Modifier_Flow_Refs mod_refs = {0};
-    bool need_to_calc_sec_size = false;
+    CTUI_Component_Child *child;
+    CTUI_Component_Flow_Dir flow_dir = comp->data->container.flow_dir;
+    CTUI_Flow_Refs f_refs = {0}, ch_f_refs = {0};
 
-    x_spacing = calc_component_x_spacing(comp);
-    y_spacing = calc_component_y_spacing(comp);
+    init_flow_refs(flow_dir, comp, &f_refs);
 
-    flow_dir = comp->data->container.flow_dir;
-    init_flow_refs(flow_dir, comp, &main_refs, &sec_refs);
-    init_mod_flow_refs(flow_dir, comp, &mod_refs, NULL);
-
-    if (sec_refs.sizing->type == SIZE_FIXED){
-        *sec_refs.bbox_value += sec_refs.sizing->fixvalue;
-    } else {
-        need_to_calc_sec_size = true;
-        *sec_refs.bbox_value += sec_refs.sizing->minmax.max;
+    if (!comp->parent) {
+        *f_refs.main.bbox_value = f_refs.main.sizing->minmax.max;
+        *f_refs.sec.bbox_value = f_refs.sec.sizing->minmax.max;
     } 
 
-    if (comp->parent) {
-        CTUI_Modifier_Flow_Refs p_main_mod_refs = {0};
-        CTUI_Component_Sizing *parent_sizing;
-
-        init_mod_flow_refs(flow_dir, comp->parent, &p_main_mod_refs, NULL);
-
-        if (flow_dir == FLOW_DIR_ROW)
-            parent_sizing = &comp->parent->data->sizes.width;
-        else 
-            parent_sizing = &comp->parent->data->sizes.height;
-
-        main_refs.sizing->minmax.min = parent_sizing->minmax.min; 
-        main_refs.sizing->minmax.max = 
-            parent_sizing->minmax.max
-            - *p_main_mod_refs.border_a
-            - *p_main_mod_refs.border_b
-            - *p_main_mod_refs.padding_a
-            - *p_main_mod_refs.padding_b;
-    } 
-
-    child = comp->data->container.children->begin;
+    child = comp->data->container.children->head;
     while (child) { 
-        init_flow_refs(flow_dir, child->comp, &child_main_refs, &child_sec_refs);
-        if (child->comp->type == COMPONENT_TYPE_CONTAINER) {
-            measure_component(child->comp);
-            children_sizes.containers += *child_main_refs.bbox_value;
-        } else {
-            calc_children_main_dir_sizes(
-                flow_dir,
-                child->comp, 
-                &child_main_refs, 
-                &children_sizes
-            );
-        }
-        calc_children_secondary_dir_sizes(
-            flow_dir, 
-            child->comp, 
-            &child_sec_refs, 
-            children_sizes.grow_children_len
-        );
-        if (
-            need_to_calc_sec_size 
-            && *child_sec_refs.bbox_value > *sec_refs.bbox_value 
-        ) {
-            *sec_refs.bbox_value = *child_sec_refs.bbox_value;
-        } 
+        init_flow_refs(flow_dir, child->comp, &ch_f_refs);
+        calc_children_main_sizes(flow_dir, child->comp, ch_f_refs.main, f_refs.main);
+        calc_children_sec_sizes(flow_dir, ch_f_refs.sec, f_refs.sec);
+        if (child->comp->type == COMPONENT_TYPE_CONTAINER)
+            measure_comp(child->comp);
         child = child->next;
     }
-
-    if (comp->parent) {
-        ctui_log(LOG_WARNING, "comp parent name %s", comp->parent->id.string_value);
-        comp->computed->bounding_box.width = x_spacing;
-        comp->computed->bounding_box.height = y_spacing;
-    } else {
-        *main_refs.bbox_value +=
-             *mod_refs.border_a
-            + *mod_refs.border_b
-            + *mod_refs.padding_a
-            + *mod_refs.padding_b;
-    }
-
-    *main_refs.bbox_value += 
-        children_sizes.fixed
-        + children_sizes.containers
-        + children_sizes.percentages
-        + children_sizes.growing; 
-    
 }
 
-
-void calculate_comp_layout(CTUI_Component *comp, int x_offset, int y_offset)
+void calculate_comp_layout(CTUI_Component *comp)
 {
     if (!comp) {
         return;
     }
-    CTUI_Component_Container_Data_Child *child;
+    CTUI_Component_Child *child;
 
-    child = comp->data->container.children->begin;
-
-    if (comp->parent) {
-        x_offset += 
-            + comp->parent->computed->bounding_box.x
-            + comp->parent->data->border.width.left
-            + comp->parent->data->padding.left;
-        y_offset += 
-            + comp->parent->computed->bounding_box.y
-            + comp->parent->data->border.width.top
-            + comp->parent->data->padding.top;
-        comp->computed->bounding_box.x = x_offset;
-        comp->computed->bounding_box.y = y_offset;
-        x_offset += 
-            + comp->data->border.width.left
-            + comp->data->padding.left;
-        y_offset += 
-            + comp->data->border.width.top
-            + comp->data->padding.top;
-    } else {
+    if (!comp->parent) {
         comp->computed->bounding_box.x = 0;
         comp->computed->bounding_box.y = 0;
-    }
+    } 
 
-
+    child = comp->data->container.children->head;
+    int x_offset = 0, y_offset = 0;
     while (child) { 
-        if (child->comp->type == COMPONENT_TYPE_CONTAINER) {
-            calculate_comp_layout(child->comp, x_offset, y_offset);
-        } else { 
-            child->comp->computed->bounding_box.x = x_offset;
-            child->comp->computed->bounding_box.y = y_offset;
+        child->comp->computed->bounding_box.x = 
+            comp->computed->bounding_box.x
+            + comp->data->border.width.left
+            + comp->data->padding.left
+            + x_offset;
+        child->comp->computed->bounding_box.y = 
+            + comp->computed->bounding_box.y
+            + comp->data->border.width.top
+            + comp->data->padding.top
+            + y_offset;
+        if (comp->data->container.flow_dir == FLOW_DIR_ROW) 
             x_offset += child->comp->computed->bounding_box.width;
-        }
+        else 
+            y_offset += child->comp->computed->bounding_box.height;
+        if (child->comp->type == COMPONENT_TYPE_CONTAINER) 
+            calculate_comp_layout(child->comp);
         child = child->next;
     }
 }
 
+void draw_border_corner(
+    WINDOW *win, uint16_t a, uint16_t b, uint16_t y, uint16_t x, int c
+) {
+    if (a > 0 && b > 0)
+        mvwaddch(win, y, x, c);
+    else if (a > 0)
+        mvwaddch(win, y, x, c);
+    else if (b > 0)
+        mvwaddch(win, y, x, c);
+}
 
-void print_log_ctui_ctx()
+void draw_border(WINDOW *win, CTUI_Component *comp)
 {
-    CTUI_Context *ctx = get_current_ctx();
-    ctui_log(LOG_INFO, "------------- CTUI CONTEXT INFO START -------------");
-    ctui_log(LOG_INFO, "ctx screen width = %d", ctx->screen_config->width);
-    ctui_log(LOG_INFO, "ctx screen height = %d", ctx->screen_config->height);
-    ctui_log(LOG_INFO, "ctx arena end capacity = %d",  (int)ctx->arena->end->capacity);
-    ctui_log(LOG_INFO, "ctx components hash map length (total components count) = %d", (int)ctx->components_hm->length);
-    ctui_log(LOG_INFO, "ctx components hash map capacity = %d", (int)ctx->components_hm->capacity);
-    ctui_log(LOG_INFO, "ctx open components stack length = %d", (int)ctx->open_components_stack->length);
-    ctui_log(LOG_INFO, "------------- CTUI CONTEXT INFO END -------------\n\n");
+    CTUI_BoundingBox *box = &comp->computed->bounding_box;
+    CTUI_Component_Border *br = &comp->data->border; 
 
-    for (int i = 0; i < ctx->components_hm->capacity; i++) {
-        if (ctx->components_hm->items[i]) {
-            log_component(ctx->components_hm->items[i]->value);
-        }
-    }
+    draw_border_corner(
+        win, 
+        br->width.left, 
+        br->width.top, 
+        box->y, 
+        box->x, 
+        ACS_ULCORNER
+    );
+    draw_border_corner(
+        win, 
+        br->width.left, 
+        br->width.bottom, 
+        box->y + box->height - 1, 
+        box->x,
+        ACS_LLCORNER
+    );
+    draw_border_corner(
+        win, 
+        br->width.right, 
+        br->width.top, 
+        box->y, 
+        box->x + box->width - 1, 
+        ACS_URCORNER
+    );
+    draw_border_corner(
+        win, 
+        br->width.right, 
+        br->width.bottom, 
+        box->y + box->height - 1, 
+        box->x + box->width - 1,
+        ACS_LRCORNER
+    );
+
+    if (br->width.top > 0) 
+        mvwhline(win, box->y, box->x + 1,  0, box->width - 2);
+    if (br->width.bottom > 0) 
+        mvwhline(win, box->y + box->height - 1, box->x + 1, 0, box->width - 2);
+    if (br->width.left > 0) 
+        mvwvline(win, box->y + 1, box->x,  0, box->height - 2);
+    if (br->width.right > 0) 
+        mvwvline(win, box->y + 1, box->x + box->width - 1, 0, box->height - 2);
 }
 
 void draw_comp(CTUI_Component *comp) {
     CTUI_Context *ctx = get_current_ctx();
-    CTUI_BoundingBox *comp_bbox = &comp->computed->bounding_box;
-    mvwaddch(
-        ctx->screen_config->win, 
-        comp_bbox->y, comp_bbox->x, 
-        ACS_ULCORNER
-    );
-    mvwaddch(
-        ctx->screen_config->win, 
-        comp_bbox->y + comp_bbox->height - 1, 
-        comp_bbox->x, ACS_LLCORNER
-    );
-    mvwaddch(
-        ctx->screen_config->win, 
-        comp_bbox->y, 
-        comp_bbox->x + comp_bbox->width - 1, 
-        ACS_URCORNER
-    );
-    mvwaddch(
-        ctx->screen_config->win, 
-        comp_bbox->y + comp_bbox->height - 1, 
-        comp_bbox->x + comp_bbox->width - 1, 
-        ACS_LRCORNER
-    );
-    mvwhline(ctx->screen_config->win, comp_bbox->y, comp_bbox->x + 1,  0, comp_bbox->width - 2);
-    mvwhline(ctx->screen_config->win, comp_bbox->y + comp_bbox->height - 1, comp_bbox->x + 1, 0, comp_bbox->width - 2);
-    mvwvline(ctx->screen_config->win, comp_bbox->y + 1, comp_bbox->x,  0, comp_bbox->height - 2);
-    mvwvline(ctx->screen_config->win, comp_bbox->y + 1, comp_bbox->x + comp_bbox->width - 1, 0, comp_bbox->height - 2);
+    WINDOW *win = ctx->screen_config->win;
+    CTUI_BoundingBox *box = &comp->computed->bounding_box;
+
+    draw_border(win, comp);
+
+    if (comp->type != COMPONENT_TYPE_CONTAINER) {
+
+        float x, y;
+        size_t text_len = strlen(comp->data->text.value);
+        switch(comp->data->x_alignment){
+        case X_LEFT:
+            x = box->x + comp->data->padding.left + comp->data->border.width.left;
+            break;
+        case X_CENTER:
+            x = ceilf(box->x + (float)box->width / 2) - ((float)text_len / 2);
+            break;
+        case X_RIGHT:
+            x = box->x + (box->width - comp->data->border.width.right - comp->data->padding.right) - (float)text_len;
+            break;
+        }
+        switch (comp->data->y_alignment) {
+        case Y_TOP:
+            y = box->y + comp->data->padding.top + comp->data->border.width.top;
+            break;
+        case Y_CENTER:
+            y = ceilf(box->y + (float)box->height / 2) - 1;
+            break;
+        case Y_BOTTOM:
+            y = box->y + (box->height - comp->data->border.width.bottom - comp->data->padding.bottom) - 1;
+            break;
+        }
+        mvwaddstr(win, y, x, comp->data->text.value);
+    }
+    print_component(comp);
 }
 
 void draw_layout(CTUI_Component *comp)
@@ -744,21 +777,19 @@ void draw_layout(CTUI_Component *comp)
     if (!comp) {
         return;
     }
-    ctui_log(LOG_INFO, "render comp %s", comp->id.string_value);
-    CTUI_Component_Container_Data_Child *child;
+    CTUI_Component_Child *tmp;
 
-    child = comp->data->container.children->begin;
+    tmp = comp->data->container.children->head;
 
     draw_comp(comp);
 
-    while (child) {
-        ctui_log(LOG_INFO, "render child comp %s", child->comp->id.string_value);
-        if (child->comp->type == COMPONENT_TYPE_CONTAINER) {
-            draw_layout(child->comp);
+    while (tmp) {
+        if (tmp->comp->type == COMPONENT_TYPE_CONTAINER) {
+            draw_layout(tmp->comp);
         } else {
-            draw_comp(child->comp);
+            draw_comp(tmp->comp);
         }
-        child = child->next;
+        tmp = tmp->next;
     }
 }
 
@@ -768,9 +799,21 @@ void render_layout()
     if (!ctx->root) {
         ctui_log(LOG_ERROR, "Root component is not defined!");
     }
-    measure_component(ctx->root);
-    calculate_comp_layout(ctx->root, 0, 0);
+    measure_comp_maxsize(ctx->root);
+    measure_comp(ctx->root);
+    calculate_comp_layout(ctx->root);
+    clear();
     draw_layout(ctx->root);
+    refresh();
+    
+}
+
+void handle_resize()
+{
+    CTUI_Context *ctx = get_current_ctx();
+    getmaxyx(stdscr, ctx->screen_config->height, ctx->screen_config->width);
+    resizeterm(ctx->screen_config->height, ctx->screen_config->width);
+    render_layout();
 }
 
 int main(int argc, char **argv) {
@@ -788,15 +831,33 @@ int main(int argc, char **argv) {
     end_layout();
 
     render_layout();
-    print_log_ctui_ctx();
 
+    struct timespec now, last_resize = {0, 0};
+    long diff_ms;
     while ((key = getch()) != key_escape) {
         switch (key) {
-        case KEY_ENTER:
+        case 'q':
+            goto shutdown;
+            break;
+        case 'r': 
+            clear();
+            handle_resize();
+            break;
+        case KEY_RESIZE:
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            diff_ms = (now.tv_sec - last_resize.tv_sec) * 1000
+                         + (now.tv_nsec - last_resize.tv_nsec) / 1000000;
+            if (diff_ms > 16) { 
+                clear();
+                handle_resize();
+                last_resize = now;
+            }
             break;
         }
     }
 
+shutdown:
     endwin();
+    close_ctx();
     return 0;
 } 

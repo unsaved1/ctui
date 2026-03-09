@@ -82,7 +82,7 @@ Arena_Mark arena_snapshot(Arena *a)
     return m;
 }
 
-void rena_rewind(Arena *a, Arena_Mark m) 
+void arena_rewind(Arena *a, Arena_Mark m) 
 {
     if (m.region == NULL) {
         arena_reset(a);

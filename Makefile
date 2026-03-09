@@ -3,7 +3,7 @@ CFLAGS = -g -Wall -std=c99
 
 INCLUDES = -I./
 
-LIBS = -lncurses
+LIBS = -lncurses -lm
 SRCS = ctui.c arena.c hash.c str.c 
 OBJS = $(SRCS:.c=.o)
 
