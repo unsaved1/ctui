@@ -12,16 +12,16 @@ MAIN = ctui
 .PHONY: depend clean
 
 all: $(MAIN) 
-	@echo Simple compiler named ctui has been compiled
+	@echo CTUI has been compiled
 
 $(MAIN): $(OBJS) 
-		$(CC) $(CFLAGS) $(INCLUDES) -o $(MAIN) $(OBJS) $(LIBS)
+		$(CC) $(CFLAGS) $(INCLUDES) -o $(MAIN).out $(OBJS) $(LIBS)
 	
 .c.o:
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 clean:
-	$(RM) *.o *~ $(MAIN)
+	$(RM) *.o *~ $(MAIN).out
 
 depend: $(SRCS)
 		makedepend $(INCLUDES) $^

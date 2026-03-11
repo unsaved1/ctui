@@ -357,10 +357,12 @@ void header()
                 .text = { .value = arena_strdup(ctx->arena, "h title") },
                 .sizes = {
                     .width = {.type = SIZE_GROW},
-                    .height = {.type = SIZE_FIXED, .fixvalue = 2}
+                    .height = {.type = SIZE_FIXED, .fixvalue = 4}
                 },
                 .padding = {0},
-                .border = {{0}}
+                .border = {.width = {.left = 1, .right = 1, .top = 1, .bottom = 1}},
+                .x_alignment = X_CENTER,
+                .y_alignment = Y_CENTER,
             });
             CTUI("title2", COMPONENT_TYPE_LABEL, {
                 .sizes = {
@@ -389,21 +391,39 @@ void header()
                 }
             });
         }
+        CTUI("content-bottom", COMPONENT_TYPE_CONTAINER, {
+            .sizes = {
+                .width = {.type = SIZE_GROW},
+                .height= {.type = SIZE_GROW}
+            },
+            .border = {.width = {.left = 1, .right = 1, .top = 1, .bottom = 1}},
+            .padding = {.top = 1, .bottom = 1, .left = 2, .right = 2},
+            .x_alignment = X_LEFT,
+            .y_alignment = Y_TOP,
+            .container = {
+                .flow_dir = FLOW_DIR_ROW,
+                .children = init_children() 
+            }
+        }) {
+            char comp_name[6];
+            for (int i = 0; i < 6; ++i) {
+                snprintf(comp_name, 6, "box-%d", i);
+                CTUI(comp_name, COMPONENT_TYPE_LABEL, {
+                    .sizes = {
+                        .width = {.type = SIZE_GROW},
+                        .height = {.type = SIZE_GROW}
+                    },
+                    .text = { .value = arena_strdup(ctx->arena, comp_name)},
+                    .x_alignment = X_RIGHT,
+                    .y_alignment = Y_BOTTOM,
+                    .padding = {0},
+                    .border = {
+                        .width = {.top = 1, .bottom = 1, .left = 1, .right = 1}
+                    }
+                });
+            }
+        };
     }
-    CTUI("content-bottom", COMPONENT_TYPE_CONTAINER, {
-        .sizes = {
-            .width = {.type = SIZE_GROW},
-            .height= {.type = SIZE_GROW}
-        },
-        .border = {.width = {.left = 1, .right = 1, .top = 1, .bottom = 1}},
-        .padding = {.top = 1, .bottom = 1, .left = 2, .right = 2},
-        .x_alignment = X_LEFT,
-        .y_alignment = Y_TOP,
-        .container = {
-            .flow_dir = FLOW_DIR_ROW,
-            .children = init_children() 
-        }
-    });
 }
 
 void init_x_flow_refs(CTUI_Flow_Ref *ref, CTUI_Component *comp)
@@ -513,7 +533,7 @@ void measure_comp_maxsize(CTUI_Component *comp)
             occupied_space += ch_f_refs.main.sizing->minmax.max;
             break;
         case SIZE_PERCENT:
-            ch_f_refs.main.sizing->minmax.max = ceilf(
+            ch_f_refs.main.sizing->minmax.max = roundf(
                 (
                  f_refs.main.sizing->minmax.max
                  - calc_comp_spacing(f_refs.main.mod_ref)
@@ -530,7 +550,7 @@ void measure_comp_maxsize(CTUI_Component *comp)
             ch_f_refs.sec.sizing->minmax.max = ch_f_refs.sec.sizing->fixvalue; 
             break;
         case SIZE_PERCENT:
-            ch_f_refs.sec.sizing->minmax.max = ceilf(
+            ch_f_refs.sec.sizing->minmax.max = roundf(
                 (
                  f_refs.sec.sizing->minmax.max
                  - calc_comp_spacing(f_refs.sec.mod_ref)
@@ -553,7 +573,7 @@ void measure_comp_maxsize(CTUI_Component *comp)
         init_flow_refs(comp->data->container.flow_dir, tmp->comp, &ch_f_refs);
         if (ch_f_refs.main.sizing->type == SIZE_GROW) {
             if (tmp->comp->type == COMPONENT_TYPE_CONTAINER) {
-                ch_f_refs.main.sizing->minmax.max = ceilf(
+                ch_f_refs.main.sizing->minmax.max = roundf(
                     (
                         f_refs.main.sizing->minmax.max 
                         - calc_comp_spacing(f_refs.main.mod_ref) 
@@ -561,7 +581,7 @@ void measure_comp_maxsize(CTUI_Component *comp)
                     ) / grow_children_len
                 );
             } else {
-                ch_f_refs.main.sizing->minmax.max = ceilf(
+                ch_f_refs.main.sizing->minmax.max = roundf(
                     (
                         f_refs.main.sizing->minmax.max
                         - calc_comp_spacing(f_refs.main.mod_ref) 
@@ -750,7 +770,7 @@ void draw_comp(CTUI_Component *comp) {
             x = box->x + comp->data->padding.left + comp->data->border.width.left;
             break;
         case X_CENTER:
-            x = ceilf(box->x + (float)box->width / 2) - ((float)text_len / 2);
+            x = roundf(box->x + (float)box->width / 2) - ((float)text_len / 2);
             break;
         case X_RIGHT:
             x = box->x + (box->width - comp->data->border.width.right - comp->data->padding.right) - (float)text_len;
@@ -761,7 +781,7 @@ void draw_comp(CTUI_Component *comp) {
             y = box->y + comp->data->padding.top + comp->data->border.width.top;
             break;
         case Y_CENTER:
-            y = ceilf(box->y + (float)box->height / 2) - 1;
+            y = roundf(box->y + (float)box->height / 2) - 1;
             break;
         case Y_BOTTOM:
             y = box->y + (box->height - comp->data->border.width.bottom - comp->data->padding.bottom) - 1;
